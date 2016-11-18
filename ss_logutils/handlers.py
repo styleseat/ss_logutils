@@ -7,9 +7,26 @@ import logging.handlers
 import multiprocessing
 import os
 import sys
+import threading
 import uuid
 
 from .util import Timestamp
+
+_lock = threading.Lock()
+_handler_locks = {}
+
+
+def register_lock(name, lock):
+    """Register a named lock."""
+    with _lock:
+        if name in _handler_locks:
+            raise ValueError('Lock %s has already been registered' % (name,))
+        _handler_locks[name] = lock
+
+
+def get_lock(name):
+    """Retrieve a named lock."""
+    return _handler_locks[name]
 
 
 class ArchivingFileHandler(logging.handlers.BaseRotatingHandler):
@@ -120,3 +137,22 @@ class ForkSafeArchivingFileHandler(ArchivingFileHandler):
 
     def createLock(self):
         self.lock = multiprocessing.RLock()
+
+
+class NamedLockArchivingFileHandler(ArchivingFileHandler):
+    """Handler which uses a named, external lock for concurrency control.
+
+    This class may be useful in situations where child processes configure
+    their own logging hierarchies but may share file outputs.
+    """
+
+    def __init__(
+            self, filename, archiveDir, lockName, encoding=None, delay=False,
+            maxBytes=0, interval=0):
+        self.lockName = lockName
+        super(NamedLockArchivingFileHandler, self).__init__(
+            filename, archiveDir, encoding=encoding, delay=delay,
+            maxBytes=maxBytes, interval=interval)
+
+    def createLock(self):
+        self.lock = get_lock(self.lockName)

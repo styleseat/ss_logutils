@@ -365,3 +365,13 @@ def test_concurrent_writes(
         for _ in range(entries_per_proc):
             expected_entries.add(generate_message(entry_size))
         assert_logs_contain(expected_entries)
+
+
+@pytest.mark.parametrize('handler_class', [
+    handlers.NamedLockArchivingFileHandler])
+def test_named_lock_handler(handler_factory, reset_locks):
+    lock_name = 'my_lock'
+    lock = mock.Mock()
+    handlers.register_lock(lock_name, lock)
+    handler = handler_factory(dict(lockName=lock_name, maxBytes=1))
+    assert handler.lock is lock
