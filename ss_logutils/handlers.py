@@ -6,6 +6,7 @@ import errno
 import logging.handlers
 import multiprocessing
 import os
+import stat
 import sys
 import threading
 import uuid
@@ -63,9 +64,9 @@ class ArchivingFileHandler(logging.handlers.BaseRotatingHandler):
     def shouldRollover(self, record):
         if self.stream is None:
             self.stream = self._open()
-            opened = True
-        else:
-            opened = False
+        elif self.file_id != self._get_file_id():
+            self.__close()
+            self.stream = self._open()
         if self.maxBytes > 0:
             # The POSIX open O_APPEND specification doesn't require the file
             # position prior to a write to match the file's size, and even if
@@ -75,17 +76,7 @@ class ArchivingFileHandler(logging.handlers.BaseRotatingHandler):
             self.stream.seek(0, 2)
             logBytes = self.stream.tell()
             if logBytes > self.maxBytes:
-                # If the log size exceeds the max, either the max has changed,
-                # or another thread of execution rolled the log and the log
-                # file should be re-opened.
-                if opened:
-                    return True
-                self.__close()
-                self.stream = self._open()
-                self.stream.seek(0, 2)
-                logBytes = self.stream.tell()
-                if logBytes > self.maxBytes:
-                    return True
+                return True
             if logBytes > 0:
                 msgLength = len(self.format(record)) + len('\n')
                 if logBytes + msgLength > self.maxBytes:
@@ -93,11 +84,7 @@ class ArchivingFileHandler(logging.handlers.BaseRotatingHandler):
         if self.interval > 0:
             now = Timestamp.current()
             if now - self.lastRollover >= self.interval:
-                # If another thread of execution rolled the log, the local
-                # timestamp value will be out of date, so refresh it.
-                self._readLastRollover()
-                if now - self.lastRollover >= self.interval:
-                    return True
+                return True
         return False
 
     def _readLastRollover(self):
@@ -108,6 +95,10 @@ class ArchivingFileHandler(logging.handlers.BaseRotatingHandler):
         with open(self.tsFilename, 'wb') as fp:
             self.lastRollover = Timestamp.current().write(fp)
 
+    def _get_file_id(self):
+        st = os.stat(self.baseFilename)
+        return st[stat.ST_DEV], st[stat.ST_INO]
+
     def _open(self):
         # Open files in binary mode to ensure tell works in Python 3.
         # See https://docs.python.org/3/tutorial/inputoutput.html#reading-and-writing-files  # noqa
@@ -115,7 +106,8 @@ class ArchivingFileHandler(logging.handlers.BaseRotatingHandler):
             sys.getdefaultencoding() if self.encoding is None else
             self.encoding)
         stream = codecs.open(self.baseFilename, self.mode, encoding)
-        if self.interval > 0 and not hasattr(self, 'lastRollover'):
+        self.file_id = self._get_file_id()
+        if self.interval > 0:
             try:
                 self._readLastRollover()
             except (IOError, OSError) as e:
@@ -127,6 +119,8 @@ class ArchivingFileHandler(logging.handlers.BaseRotatingHandler):
     def __close(self):
         # Make this method class-private in case the superclass eventually
         # defines a _close method.
+        self.file_id = None
+        self.lastRollover = None
         if self.stream:
             self.stream.close()
             self.stream = None

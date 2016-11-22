@@ -2,6 +2,7 @@ from __future__ import absolute_import
 
 import collections
 import datetime
+import functools
 import itertools
 import logging
 import multiprocessing
@@ -80,25 +81,44 @@ def make_log_record(msg=None, args=None, level=logging.INFO):
         'test', level, pathname, lineno, msg, args, None, func)
 
 
-@pytest.fixture
-def create_log_entry(handler):
-    def emit(entry):
-        if isinstance(entry, dict):
-            record = make_log_record(**entry)
-        else:
-            record = make_log_record(msg=entry)
-        handler.handle(record)
-
-    return emit
+def emit(handler, entry):
+    if isinstance(entry, dict):
+        record = make_log_record(**entry)
+    else:
+        record = make_log_record(msg=entry)
+    handler.handle(record)
 
 
 @pytest.fixture
-def create_logs(create_log_entry):
-    def emit_records(logs):
-        for entry in itertools.chain.from_iterable(logs):
-            create_log_entry(entry)
+def create_log_entry_factory():
+    def factory(handler):
+        return functools.partial(emit, handler)
 
-    return emit_records
+    return factory
+
+
+@pytest.fixture
+def create_log_entry(create_log_entry_factory, handler):
+    return create_log_entry_factory(handler)
+
+
+@pytest.fixture
+def create_logs_factory(create_log_entry_factory):
+    def factory(handler):
+        create_log_entry = create_log_entry_factory(handler)
+
+        def emit_records(logs):
+            for entry in itertools.chain.from_iterable(logs):
+                create_log_entry(entry)
+
+        return emit_records
+
+    return factory
+
+
+@pytest.fixture
+def create_logs(create_logs_factory, handler):
+    return create_logs_factory(handler)
 
 
 def list_archive_paths(archive_dir):
@@ -175,6 +195,12 @@ class TestInit(object):
         with pytest.raises(ValueError):
             handler_class(log_file, log_file, maxBytes=1)
 
+    def test_file_identification(self, handler_factory):
+        handlers = [handler_factory(dict(maxBytes=1)) for _ in range(2)]
+        file_id = handlers[0].file_id
+        assert file_id is not None
+        assert handlers[1].file_id == file_id
+
 
 class TestSizeRotation(object):
     @staticmethod
@@ -234,6 +260,29 @@ class TestSizeRotation(object):
         create_logs(logs)
         assert_logs_equal(logs)
 
+    @pytest.mark.parametrize('max_bytes', [16])
+    def test_rollover_by_other_handler_with_shared_lock(
+            self, handler_factory, handler, create_log_entry_factory,
+            create_log_entry, assert_logs_equal):
+        """The handler should account for rollovers by external actors.
+
+        If two ArchivingFileHandlers share the same lock but no other state,
+        and one of the handlers rolls the log, the other handler should
+        automatically switch output log files."""
+        logs = [['x'], ['y', 'z']]
+        entries = list(itertools.chain.from_iterable(logs))
+        external_handler = handler_factory(dict(maxBytes=1))
+        original_file_id = external_handler.file_id
+        external_create_log_entry = create_log_entry_factory(external_handler)
+        for entry in entries[:2]:
+            external_create_log_entry(entry)
+        updated_file_id = external_handler.file_id
+        assert updated_file_id is not None
+        assert updated_file_id != original_file_id
+        create_log_entry(entries[2])
+        assert handler.file_id == updated_file_id
+        assert_logs_equal(logs)
+
 
 @pytest.mark.usefixtures('mock_datetime_class')
 class TestTimedRotation(object):
@@ -290,6 +339,30 @@ class TestTimedRotation(object):
             seconds=interval+1)
         create_log_entry(log[1])
         assert_logs_equal([log])
+
+    def test_rollover_by_other_handler_with_shared_lock(
+            self, mock_datetime_class, handler_factory, handler, interval,
+            create_log_entry_factory, create_log_entry, assert_logs_equal):
+        """The handler should account for rollovers by external actors.
+
+        If two ArchivingFileHandlers share the same lock but no other state,
+        and one of the handlers rolls the log, the other handler should
+        automatically switch output log files."""
+        logs = [['x'], ['y', 'z']]
+        entries = list(itertools.chain.from_iterable(logs))
+        external_handler = handler_factory(dict(interval=interval))
+        original_file_id = external_handler.file_id
+        external_create_log_entry = create_log_entry_factory(external_handler)
+        external_create_log_entry(entries[0])
+        mock_datetime_class.utcnow.return_value += datetime.timedelta(
+            seconds=interval)
+        external_create_log_entry(entries[1])
+        updated_file_id = external_handler.file_id
+        assert updated_file_id is not None
+        assert updated_file_id != original_file_id
+        create_log_entry(entries[2])
+        assert handler.file_id == updated_file_id
+        assert_logs_equal(logs)
 
 
 def generate_message(size):
