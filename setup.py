@@ -6,7 +6,7 @@ from setuptools import setup
 
 setup(
     name='ss_logutils',
-    version='0.1.1',
+    version='0.1.2',
     author='StyleSeat',
     description='Custom logging support',
     url='https://github.com/styleseat/ss_logutils',
