@@ -1,7 +1,2 @@
-isort
-flake8
-mock
-pip-tools
-pytest>2.0.0,<3.0.0  # insertion introspection is broken in pytest 3.0.0-3.0.3
-pytest-cov
-tox
+mock<1.1.0,>=1.0.1
+pytest<3.1.0,>=3.0.7
