@@ -14,6 +14,7 @@ import mock
 import pytest
 
 from ss_logutils import handlers, util
+from six.moves import range
 
 try:
     range = xrange
